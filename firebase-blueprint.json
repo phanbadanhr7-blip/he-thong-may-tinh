@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "Device": {
+      "title": "Device",
+      "description": "Smart home device state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the device" },
+        "name": { "type": "string", "description": "Human-readable name of the device" },
+        "type": { "type": "string", "enum": ["light", "climate", "lock", "media", "vacuum", "switch"], "description": "Device category" },
+        "status": { "type": "string", "description": "Main state of the device (on/off, locked/unlocked, cleaning, etc.)" },
+        "value": { "type": "number", "description": "Numerical value representing bright status, temp level or sound volume" },
+        "unit": { "type": "string", "description": "Measurement unit e.g., °F or %" },
+        "room": { "type": "string", "description": "The target physical area / room where the device resides" },
+        "color": { "type": "string", "description": "Optional hex color value for smart lights" },
+        "mode": { "type": "string", "description": "Optional sub-mode for climate e.g., cool/heat" },
+        "track": { "type": "string", "description": "Optional music track name currently playing" },
+        "artist": { "type": "string", "description": "Optional music artist name currently playing" }
+      },
+      "required": ["id", "name", "type", "status", "value", "room"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Log of smart home activities or assistant alerts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the log entry" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "ISO 8601 formatting of UTC creation date" },
+        "message": { "type": "string", "description": "Descriptive text of the activity" },
+        "type": { "type": "string", "enum": ["info", "auth", "alert", "voice"], "description": "Type classification of log" }
+      },
+      "required": ["id", "timestamp", "message", "type"]
+    }
+  },
+  "firestore": {
+    "devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Secure storage collection of showroom or household IoT devices"
+    },
+    "logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Chronological system transaction logs for telemetry and diagnostics"
+    }
+  }
+}

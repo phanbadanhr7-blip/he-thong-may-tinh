@@ -200,6 +200,36 @@ export default function App() {
     }
   };
 
+  // Add new diagnostic logs to Atrium Core
+  const addLog = async (message: string, type: 'info' | 'auth' | 'alert' | 'voice' = 'info') => {
+    // Optimistic log layout
+    const newLog: ActivityLog = {
+      id: String(Date.now() + Math.random()),
+      timestamp: new Date().toISOString(),
+      message,
+      type
+    };
+    setLogs(prev => [newLog, ...prev]);
+
+    try {
+      const resp = await fetch('/api/logs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ message, type })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.success && data.logs) {
+          setLogs(data.logs);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to post system diagnostics log: ", err);
+    }
+  };
+
   // Reset demo structure
   const handleReset = async () => {
     try {

@@ -1,8 +1,20 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, 
+  doc, 
+  getDoc, 
+  getDocs, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  collection 
+} from "firebase/firestore";
 
 dotenv.config();
 
@@ -26,8 +38,61 @@ interface Device {
   artist?: string;
 }
 
-// In-Memory Device Database
-let devices: Record<string, Device> = {
+interface ActivityLog {
+  id: string;
+  timestamp: string;
+  message: string;
+  type: 'info' | 'auth' | 'alert' | 'voice';
+}
+
+// Load configurations safely
+const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
+const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: null,
+      email: null,
+      emailVerified: null,
+      isAnonymous: null,
+      tenantId: null,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+// In-Memory Device Database (Fallback/Defaults)
+const initialDevices: Record<string, Device> = {
   living_light: { id: "living_light", name: "Đèn Trang trí Phòng khách", type: "light", status: "on", value: 80, room: "Phòng khách", color: "#FBBF24" },
   dining_light: { id: "dining_light", name: "Đèn Chùm Phòng ăn", type: "light", status: "off", value: 0, room: "Phòng ăn", color: "#F1F5F9" },
   bedroom_light: { id: "bedroom_light", name: "Đèn Ngủ Phòng ngủ chính", type: "light", status: "on", value: 30, room: "Phòng ngủ", color: "#FBBF24" },
@@ -41,21 +106,112 @@ let devices: Record<string, Device> = {
   sprinklers: { id: "sprinklers", name: "Hệ thống tưới Sân vườn", type: "switch", status: "off", value: 0, room: "Sân vườn" }
 };
 
-const initialDevices = { ...devices };
-
-// Keep some activity logs
-interface ActivityLog {
-  id: string;
-  timestamp: string;
-  message: string;
-  type: 'info' | 'auth' | 'alert' | 'voice';
+// Database CRUD operations for devices
+async function getDevicesFromFirestore(): Promise<Record<string, Device>> {
+  try {
+    const devicesCol = collection(db, "devices");
+    const snapshot = await getDocs(devicesCol);
+    if (snapshot.empty) {
+      console.log("Firestore devices collection is empty. Populating default devices...");
+      for (const [id, device] of Object.entries(initialDevices)) {
+        await setDoc(doc(db, "devices", id), device);
+      }
+      return { ...initialDevices };
+    }
+    
+    const fetched: Record<string, Device> = {};
+    snapshot.forEach((docSnap) => {
+      fetched[docSnap.id] = docSnap.data() as Device;
+    });
+    return fetched;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, "devices");
+    return { ...initialDevices };
+  }
 }
 
-let activityLogs: ActivityLog[] = [
-  { id: "1", timestamp: new Date(Date.now() - 3600000).toISOString(), message: "Cửa chính đã được khóa tự động (Kịch bản: Chế độ Ban đêm)", type: "info" },
-  { id: "2", timestamp: new Date(Date.now() - 1800000).toISOString(), message: "Robot hút bụi RoboVac 9000 đã hoàn thành dọn dẹp Hành lang và tự động quay về đốc sạc.", type: "info" },
-  { id: "3", timestamp: new Date(Date.now() - 900000).toISOString(), message: "Điều Hòa Trung tâm chuyển sang chế độ Làm mát ở 72°F do nhiệt độ phòng tăng.", type: "info" }
-];
+async function saveDeviceToFirestore(device: Device): Promise<void> {
+  try {
+    await setDoc(doc(db, "devices", device.id), device);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `devices/${device.id}`);
+  }
+}
+
+async function updateDeviceInFirestore(id: string, update: Partial<Device>): Promise<void> {
+  try {
+    const deviceRef = doc(db, "devices", id);
+    await updateDoc(deviceRef, update as Record<string, any>);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `devices/${id}`);
+  }
+}
+
+async function deleteDeviceFromFirestore(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, "devices", id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `devices/${id}`);
+  }
+}
+
+async function resetDevicesInFirestore(): Promise<void> {
+  try {
+    const devicesCol = collection(db, "devices");
+    const snapshot = await getDocs(devicesCol);
+    for (const docSnap of snapshot.docs) {
+      await deleteDoc(doc(db, "devices", docSnap.id));
+    }
+    for (const [id, device] of Object.entries(initialDevices)) {
+      await setDoc(doc(db, "devices", id), device);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, "devices/reset");
+  }
+}
+
+// Database CRUD operations for logs
+async function getActivityLogsFromFirestore(): Promise<ActivityLog[]> {
+  try {
+    const logsCol = collection(db, "logs");
+    const snapshot = await getDocs(logsCol);
+    if (snapshot.empty) {
+      const initialLogs: ActivityLog[] = [
+        { id: "log_1_init", timestamp: new Date(Date.now() - 3600000).toISOString(), message: "Cửa chính đã được khóa tự động (Kịch bản: Chế độ Ban đêm)", type: "info" },
+        { id: "log_2_init", timestamp: new Date(Date.now() - 1800000).toISOString(), message: "Robot hút bụi RoboVac 9000 đã hoàn thành dọn dẹp Hành lang và tự động quay về đốc sạc.", type: "info" },
+        { id: "log_3_init", timestamp: new Date(Date.now() - 900000).toISOString(), message: "Điều Hòa Trung tâm chuyển sang chế độ Làm mát ở 72°F do nhiệt độ phòng tăng.", type: "info" }
+      ];
+      for (const log of initialLogs) {
+        await setDoc(doc(db, "logs", log.id), log);
+      }
+      return initialLogs;
+    }
+    const fetched: ActivityLog[] = [];
+    snapshot.forEach((docSnap) => {
+      fetched.push(docSnap.data() as ActivityLog);
+    });
+    fetched.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    return fetched.slice(0, 50);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, "logs");
+    return [];
+  }
+}
+
+async function addLogToFirestore(message: string, type: 'info' | 'auth' | 'alert' | 'voice' = 'info'): Promise<void> {
+  try {
+    const id = String(Date.now() + Math.random()).replace(".", "-");
+    const newLog: ActivityLog = {
+      id,
+      timestamp: new Date().toISOString(),
+      message,
+      type
+    };
+    await setDoc(doc(db, "logs", id), newLog);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `logs`);
+  }
+}
 
 // Server-Side Lazy-Loaded Gemini Client
 let aiClient: GoogleGenAI | null = null;
@@ -77,105 +233,138 @@ function getGenAI(): GoogleGenAI {
   return aiClient;
 }
 
-// Log formatting helper
-function addLog(message: string, type: 'info' | 'auth' | 'alert' | 'voice' = 'info') {
-  const newLog: ActivityLog = {
-    id: String(Date.now() + Math.random()),
-    timestamp: new Date().toISOString(),
-    message,
-    type
-  };
-  activityLogs.unshift(newLog);
-  if (activityLogs.length > 50) {
-    activityLogs.pop();
-  }
-}
-
 // --- API ROUTES ---
 
 // GET /api/devices
-app.get("/api/devices", (req, res) => {
-  res.json({ devices: Object.values(devices), logs: activityLogs });
+app.get("/api/devices", async (req, res) => {
+  try {
+    const devicesMap = await getDevicesFromFirestore();
+    const logsList = await getActivityLogsFromFirestore();
+    res.json({ devices: Object.values(devicesMap), logs: logsList });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to load state from Firestore", detail: error.message });
+  }
 });
 
 // GET /api/logs
-app.get("/api/logs", (req, res) => {
-  res.json({ logs: activityLogs });
+app.get("/api/logs", async (req, res) => {
+  try {
+    const logsList = await getActivityLogsFromFirestore();
+    res.json({ logs: logsList });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to load logs from Firestore", detail: error.message });
+  }
+});
+
+// POST /api/logs
+app.post("/api/logs", async (req, res) => {
+  const { message, type } = req.body;
+  if (!message) {
+    res.status(400).json({ error: "Thiếu nội dung message" });
+    return;
+  }
+  try {
+    await addLogToFirestore(message, type || "info");
+    const logsList = await getActivityLogsFromFirestore();
+    res.json({ success: true, logs: logsList });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to save log to Firestore", detail: error.message });
+  }
 });
 
 // PUT /api/devices/:id
-app.put("/api/devices/:id", (req, res) => {
+app.put("/api/devices/:id", async (req, res) => {
   const { id } = req.params;
   const update = req.body;
-  if (!devices[id]) {
-    res.status(404).json({ error: "Device not found" });
-    return;
-  }
+  try {
+    const devicesMap = await getDevicesFromFirestore();
+    if (!devicesMap[id]) {
+      res.status(404).json({ error: "Device not found" });
+      return;
+    }
 
-  devices[id] = { ...devices[id], ...update };
-  
-  // Format meaningful log
-  let logStr = `Thiết bị ${devices[id].name} thay đổi trạng thái: hiện đang [${devices[id].status.toUpperCase()}]`;
-  if (update.value !== undefined) logStr += `, giá trị đặt là ${update.value}${devices[id].unit || ''}`;
-  if (update.mode !== undefined) logStr += `, chế độ đặt là ${update.mode}`;
-  if (update.name !== undefined) logStr = `Thiết bị đã đổi tên thành: ${update.name}`;
-  if (update.room !== undefined) logStr = `Thiết bị ${devices[id].name} chuyển sang khu vực: ${update.room}`;
-  
-  addLog(logStr);
-  res.json({ success: true, device: devices[id] });
+    const currentDevice = { ...devicesMap[id], ...update };
+    await saveDeviceToFirestore(currentDevice);
+    
+    // Format meaningful log
+    let logStr = `Thiết bị ${currentDevice.name} thay đổi trạng thái: hiện đang [${currentDevice.status.toUpperCase()}]`;
+    if (update.value !== undefined) logStr += `, giá trị đặt là ${update.value}${currentDevice.unit || ''}`;
+    if (update.mode !== undefined) logStr += `, chế độ đặt là ${update.mode}`;
+    if (update.name !== undefined) logStr = `Thiết bị đã đổi tên thành: ${update.name}`;
+    if (update.room !== undefined) logStr = `Thiết bị ${currentDevice.name} chuyển sang khu vực: ${update.room}`;
+    
+    await addLogToFirestore(logStr);
+    res.json({ success: true, device: currentDevice });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to update device in Firestore", detail: error.message });
+  }
 });
 
 // POST /api/devices
-app.post("/api/devices", (req, res) => {
+app.post("/api/devices", async (req, res) => {
   const { name, type, room } = req.body;
   if (!name || !type || !room) {
     res.status(400).json({ error: "Thiếu thông tin thiết bị (name, type, room)" });
     return;
   }
   
-  const id = `device_${Date.now()}`;
-  let status = "off";
-  if (type === "lock") status = "locked";
-  if (type === "media") status = "paused";
-  if (type === "vacuum") status = "docked";
+  try {
+    const id = `device_${Date.now()}`;
+    let status = "off";
+    if (type === "lock") status = "locked";
+    if (type === "media") status = "paused";
+    if (type === "vacuum") status = "docked";
 
-  const newDevice: Device = {
-    id,
-    name,
-    type,
-    room,
-    status,
-    value: type === "climate" ? 72 : (type === "light" ? 100 : (type === "media" ? 50 : (type === "vacuum" ? 100 : 0))),
-    unit: type === "climate" ? "°F" : (type === "vacuum" ? "%" : undefined),
-    color: type === "light" ? "#FBBF24" : undefined,
-    mode: type === "climate" ? "cool" : undefined,
-    track: type === "media" ? "Nhạc tập trung Lofi thư giãn" : undefined,
-    artist: type === "media" ? "Hệ thống phát nhạc" : undefined
-  };
+    const newDevice: Device = {
+      id,
+      name,
+      type,
+      room,
+      status,
+      value: type === "climate" ? 72 : (type === "light" ? 100 : (type === "media" ? 50 : (type === "vacuum" ? 100 : 0))),
+      unit: type === "climate" ? "°F" : (type === "vacuum" ? "%" : undefined),
+      color: type === "light" ? "#FBBF24" : undefined,
+      mode: type === "climate" ? "cool" : undefined,
+      track: type === "media" ? "Nhạc tập trung Lofi thư giãn" : undefined,
+      artist: type === "media" ? "Hệ thống phát nhạc" : undefined
+    };
 
-  devices[id] = newDevice;
-  addLog(`Đã thêm thiết bị mới: ${name} (${room})`, "info");
-  res.json({ success: true, device: newDevice });
+    await saveDeviceToFirestore(newDevice);
+    await addLogToFirestore(`Đã thêm thiết bị mới: ${name} (${room})`, "info");
+    res.json({ success: true, device: newDevice });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to create device in Firestore", detail: error.message });
+  }
 });
 
 // DELETE /api/devices/:id
-app.delete("/api/devices/:id", (req, res) => {
+app.delete("/api/devices/:id", async (req, res) => {
   const { id } = req.params;
-  if (!devices[id]) {
-    res.status(404).json({ error: "Device not found" });
-    return;
+  try {
+    const devicesMap = await getDevicesFromFirestore();
+    if (!devicesMap[id]) {
+      res.status(404).json({ error: "Device not found" });
+      return;
+    }
+    const name = devicesMap[id].name;
+    await deleteDeviceFromFirestore(id);
+    await addLogToFirestore(`Đã xóa thiết bị: ${name}`, "info");
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to delete device from Firestore", detail: error.message });
   }
-  const name = devices[id].name;
-  delete devices[id];
-  addLog(`Đã xóa thiết bị: ${name}`, "info");
-  res.json({ success: true });
 });
 
 // POST /api/devices/reset
-app.post("/api/devices/reset", (req, res) => {
-  devices = JSON.parse(JSON.stringify(initialDevices));
-  addLog("Hệ thống Nhà thông minh đã được đặt lại về trạng thái mặc định.", "info");
-  res.json({ success: true, devices: Object.values(devices) });
+app.post("/api/devices/reset", async (req, res) => {
+  try {
+    await resetDevicesInFirestore();
+    await addLogToFirestore("Hệ thống Nhà thông minh đã được đặt lại về trạng thái mặc định.", "info");
+    const updatedDevices = await getDevicesFromFirestore();
+    res.json({ success: true, devices: Object.values(updatedDevices) });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to reset devices in Firestore", detail: error.message });
+  }
 });
 
 // POST /api/assistant
@@ -187,105 +376,133 @@ app.post("/api/assistant", async (req, res) => {
     return;
   }
 
-  addLog(`Trợ lý AI nhận được yêu cầu giọng nói/văn bản: "${message}"`, "voice");
+  try {
+    await addLogToFirestore(`Trợ lý AI nhận được yêu cầu giọng nói/văn bản: "${message}"`, "voice");
 
-  // Fallback if no API key is specified (simulated helper so users get immediate satisfaction)
-  const isMocked = !process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "MY_GEMINI_API_KEY";
+    const devicesMap = await getDevicesFromFirestore();
 
-  if (isMocked) {
-    // Elegant standard response simulation
-    let reply = "";
-    const updates: any[] = [];
-    const textLower = message.toLowerCase();
+    // Fallback if no API key is specified (simulated helper so users get immediate satisfaction)
+    const isMocked = !process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "MY_GEMINI_API_KEY";
 
-    if (textLower.includes("turn off") || textLower.includes("tắt") || textLower.includes("disable")) {
-      if (textLower.includes("light") || textLower.includes("lights") || textLower.includes("đèn")) {
-        let roomsFound = ["living_light", "dining_light", "bedroom_light", "kitchen_light"];
-        roomsFound.forEach(id => {
-          devices[id].status = "off";
-          updates.push({ id, status: "off" });
-        });
-        reply = "Tôi đã tắt toàn bộ đèn trong nhà giúp bạn rồi.";
-      } else if (textLower.includes("ac") || textLower.includes("điều hòa") || textLower.includes("air conditioner")) {
-        devices["ac_unit"].status = "off";
-        updates.push({ id: "ac_unit", status: "off" });
-        reply = "Tôi đã tắt máy điều hòa trung tâm ở phòng khách.";
-      } else if (textLower.includes("music") || textLower.includes("nhạc") || textLower.includes("loa") || textLower.includes("soundbar")) {
-        devices["smart_music"].status = "paused";
-        updates.push({ id: "smart_music", status: "paused" });
-        reply = "Tôi đã tạm dừng phát nhạc trên loa Sonos Soundbar phòng khách.";
+    if (isMocked) {
+      // Elegant standard response simulation
+      let reply = "";
+      const updates: any[] = [];
+      const textLower = message.toLowerCase();
+
+      if (textLower.includes("turn off") || textLower.includes("tắt") || textLower.includes("disable")) {
+        if (textLower.includes("light") || textLower.includes("lights") || textLower.includes("đèn")) {
+          let roomsFound = ["living_light", "dining_light", "bedroom_light", "kitchen_light"];
+          roomsFound.forEach(id => {
+            if (devicesMap[id]) {
+              devicesMap[id].status = "off";
+              updates.push({ id, status: "off" });
+            }
+          });
+          reply = "Tôi đã tắt toàn bộ đèn trong nhà giúp bạn rồi.";
+        } else if (textLower.includes("ac") || textLower.includes("điều hòa") || textLower.includes("air conditioner")) {
+          if (devicesMap["ac_unit"]) {
+            devicesMap["ac_unit"].status = "off";
+            updates.push({ id: "ac_unit", status: "off" });
+          }
+          reply = "Tôi đã tắt máy điều hòa trung tâm ở phòng khách.";
+        } else if (textLower.includes("music") || textLower.includes("nhạc") || textLower.includes("loa") || textLower.includes("soundbar")) {
+          if (devicesMap["smart_music"]) {
+            devicesMap["smart_music"].status = "paused";
+            updates.push({ id: "smart_music", status: "paused" });
+          }
+          reply = "Tôi đã tạm dừng phát nhạc trên loa Sonos Soundbar phòng khách.";
+        } else {
+          reply = "Bạn vui lòng chỉ rõ thiết bị hoặc phòng nào bạn muốn tắt nhé?";
+        }
+      } else if (textLower.includes("turn on") || textLower.includes("bật") || textLower.includes("mở") || textLower.includes("kích hoạt") || textLower.includes("chạy")) {
+        if (textLower.includes("light") || textLower.includes("lights") || textLower.includes("đèn")) {
+          if (devicesMap["living_light"]) {
+            devicesMap["living_light"].status = "on";
+            devicesMap["living_light"].value = 80;
+            updates.push({ id: "living_light", status: "on", value: 80 });
+          }
+          if (devicesMap["bedroom_light"]) {
+            devicesMap["bedroom_light"].status = "on";
+            devicesMap["bedroom_light"].value = 50;
+            updates.push({ id: "bedroom_light", status: "on", value: 50 });
+          }
+          reply = "Dạ được chứ! Tôi đã bật đèn phòng khách và đèn phòng ngủ cho bạn.";
+        } else if (textLower.includes("ac") || textLower.includes("điều hòa") || textLower.includes("air conditioner")) {
+          if (devicesMap["ac_unit"]) {
+            devicesMap["ac_unit"].status = "on";
+            updates.push({ id: "ac_unit", status: "on" });
+          }
+          reply = "Tôi đã bật máy điều hòa trung tâm phòng khách cho bạn.";
+        } else if (textLower.includes("sprinkler") || textLower.includes("tưới") || textLower.includes("bơm")) {
+          if (devicesMap["sprinklers"]) {
+            devicesMap["sprinklers"].status = "on";
+            updates.push({ id: "sprinklers", status: "on" });
+          }
+          reply = "Hệ thống tưới nước sân vườn đã được khởi động và đang hoạt động.";
+        } else if (textLower.includes("vacuum") || textLower.includes("hút bụi") || textLower.includes("dọn dẹp")) {
+          if (devicesMap["vacuum"]) {
+            devicesMap["vacuum"].status = "cleaning";
+            updates.push({ id: "vacuum", status: "cleaning" });
+          }
+          reply = "Tuyệt vời. Robot hút bụi RoboVac 9000 đã rời bến sạc và đang dọn dẹp sàn nhà.";
+        } else {
+          reply = "Tôi đã nghe rõ. Bạn vui lòng chỉ rõ thiết bị nào bạn muốn bật nhé.";
+        }
+      } else if (textLower.includes("lock") || textLower.includes("khóa") || textLower.includes("an ninh") || textLower.includes("sleep")) {
+        if (devicesMap["front_door_lock"]) {
+          devicesMap["front_door_lock"].status = "locked";
+          updates.push({ id: "front_door_lock", status: "locked" });
+        }
+        if (devicesMap["garage_door"]) {
+          devicesMap["garage_door"].status = "closed";
+          updates.push({ id: "garage_door", status: "closed" });
+        }
+        if (devicesMap["bedroom_light"]) {
+          devicesMap["bedroom_light"].status = "off";
+          updates.push({ id: "bedroom_light", status: "off" });
+        }
+        if (devicesMap["living_light"]) {
+          devicesMap["living_light"].status = "off";
+          updates.push({ id: "living_light", status: "off" });
+        }
+        reply = "Chúc bạn ngủ ngon! Hệ thống an ninh đã được kích hoạt hoàn toàn: đã khóa cửa chính, đóng cửa nhà xe và tắt toàn bộ đèn chính.";
+      } else if (textLower.includes("set thermostat") || textLower.includes("nhiệt độ") || textLower.includes("làm mát") || textLower.includes("temp")) {
+        let degree = 70;
+        const match = textLower.match(/\d+/);
+        if (match) degree = parseInt(match[0], 10);
+        if (devicesMap["ac_unit"]) {
+          devicesMap["ac_unit"].status = "on";
+          devicesMap["ac_unit"].value = degree;
+          devicesMap["ac_unit"].mode = "cool";
+          updates.push({ id: "ac_unit", status: "on", value: degree, mode: "cool" });
+        }
+        reply = `Tôi đã đặt nhiệt độ mục tiêu của điều hòa trung tâm thành ${degree}°F ở chế độ làm mát.`;
       } else {
-        reply = "Bạn vui lòng chỉ rõ thiết bị hoặc phòng nào bạn muốn tắt nhé?";
+        reply = `Tôi đã nhận lệnh của bạn: "${message}". Hãy kết nối khóa GEMINI_API_KEY chính thức của bạn tại Settings > Secrets để trải nghiệm toàn bộ sức mạnh tư duy AI, nhận thức phòng ốc và tự động cấu hình thiết bị của hệ thống nhé!`;
       }
-    } else if (textLower.includes("turn on") || textLower.includes("bật") || textLower.includes("mở") || textLower.includes("kích hoạt") || textLower.includes("chạy")) {
-      if (textLower.includes("light") || textLower.includes("lights") || textLower.includes("đèn")) {
-        devices["living_light"].status = "on";
-        devices["living_light"].value = 80;
-        devices["bedroom_light"].status = "on";
-        devices["bedroom_light"].value = 50;
-        updates.push({ id: "living_light", status: "on", value: 80 }, { id: "bedroom_light", status: "on", value: 50 });
-        reply = "Dạ được chứ! Tôi đã bật đèn phòng khách và đèn phòng ngủ cho bạn.";
-      } else if (textLower.includes("ac") || textLower.includes("điều hòa") || textLower.includes("air conditioner")) {
-        devices["ac_unit"].status = "on";
-        updates.push({ id: "ac_unit", status: "on" });
-        reply = "Tôi đã bật máy điều hòa trung tâm phòng khách cho bạn.";
-      } else if (textLower.includes("sprinkler") || textLower.includes("tưới") || textLower.includes("bơm")) {
-        devices["sprinklers"].status = "on";
-        updates.push({ id: "sprinklers", status: "on" });
-        reply = "Hệ thống tưới nước sân vườn đã được khởi động và đang hoạt động.";
-      } else if (textLower.includes("vacuum") || textLower.includes("hút bụi") || textLower.includes("dọn dẹp")) {
-        devices["vacuum"].status = "cleaning";
-        updates.push({ id: "vacuum", status: "cleaning" });
-        reply = "Tuyệt vời. Robot hút bụi RoboVac 9000 đã rời bến sạc và đang dọn dẹp sàn nhà.";
-      } else {
-        reply = "Tôi đã nghe rõ. Bạn vui lòng chỉ rõ thiết bị nào bạn muốn bật nhé.";
+
+      // Apply updates to Firestore
+      for (const u of updates) {
+        if (devicesMap[u.id]) {
+          devicesMap[u.id] = { ...devicesMap[u.id], ...u };
+          await saveDeviceToFirestore(devicesMap[u.id]);
+          await addLogToFirestore(`Hành động AI Giả lập: Đã đặt trạng thái ${devicesMap[u.id].name} thành ${u.status}${u.value !== undefined ? ' ở mức ' + u.value : ''}`, 'info');
+        }
       }
-    } else if (textLower.includes("lock") || textLower.includes("khóa") || textLower.includes("an ninh") || textLower.includes("sleep")) {
-      devices["front_door_lock"].status = "locked";
-      devices["garage_door"].status = "closed";
-      devices["bedroom_light"].status = "off";
-      devices["living_light"].status = "off";
-      updates.push(
-        { id: "front_door_lock", status: "locked" },
-        { id: "garage_door", status: "closed" },
-        { id: "bedroom_light", status: "off" },
-        { id: "living_light", status: "off" }
-      );
-      reply = "Chúc bạn ngủ ngon! Hệ thống an ninh đã được kích hoạt hoàn toàn: đã khóa cửa chính, đóng cửa nhà xe và tắt toàn bộ đèn chính.";
-    } else if (textLower.includes("set thermostat") || textLower.includes("nhiệt độ") || textLower.includes("làm mát") || textLower.includes("temp")) {
-      let degree = 70;
-      const match = textLower.match(/\d+/);
-      if (match) degree = parseInt(match[0], 10);
-      devices["ac_unit"].status = "on";
-      devices["ac_unit"].value = degree;
-      devices["ac_unit"].mode = "cool";
-      updates.push({ id: "ac_unit", status: "on", value: degree, mode: "cool" });
-      reply = `Tôi đã đặt nhiệt độ mục tiêu của điều hòa trung tâm thành ${degree}°F ở chế độ làm mát.`;
-    } else {
-      reply = `Tôi đã nhận lệnh của bạn: "${message}". Hãy kết nối khóa GEMINI_API_KEY chính thức của bạn tại Settings > Secrets để trải nghiệm toàn bộ sức mạnh tư duy AI, nhận thức phòng ốc và tự động cấu hình thiết bị của hệ thống nhé!`;
+
+      res.json({
+        textResponse: reply,
+        deviceUpdates: updates,
+        updatedDevices: Object.values(devicesMap)
+      });
+      return;
     }
 
-    // Apply updates on server
-    updates.forEach(u => {
-      if (devices[u.id]) {
-        devices[u.id] = { ...devices[u.id], ...u };
-        addLog(`Hành động AI Giả lập: Đã đặt trạng thái ${devices[u.id].name} thành ${u.status}${u.value !== undefined ? ' ở mức ' + u.value : ''}`, 'info');
-      }
-    });
-
-    res.json({
-      textResponse: reply,
-      deviceUpdates: updates,
-      updatedDevices: Object.values(devices)
-    });
-    return;
-  }
-
-  try {
     const ai = getGenAI();
 
     // Prepare current states for Gemini context
-    const currentDeviceStateString = Object.values(devices).map(d => {
+    const currentDeviceStateString = Object.values(devicesMap).map(d => {
       let state = `- ID: ${d.id}, Name: ${d.name}, Type: ${d.type}, Status: ${d.status}, Room: ${d.room}`;
       if (d.value !== undefined) state += `, current level/temp/value is ${d.value}${d.unit || ''}`;
       if (d.mode) state += `, current climate mode: ${d.mode}`;
@@ -342,29 +559,27 @@ Instructions:
     const outputText = response.text ? response.text.trim() : "{}";
     const decision = JSON.parse(outputText);
 
-    const executedUpdates: any[] = [];
     if (decision.deviceUpdates && Array.isArray(decision.deviceUpdates)) {
-      decision.deviceUpdates.forEach((u: any) => {
-        if (devices[u.id]) {
-          // Merge
-          devices[u.id] = { ...devices[u.id], ...u };
-          executedUpdates.push(devices[u.id]);
-          const displayVal = u.value !== undefined ? ` thành ${u.value}${devices[u.id].unit || ''}` : '';
+      for (const u of decision.deviceUpdates) {
+        if (devicesMap[u.id]) {
+          devicesMap[u.id] = { ...devicesMap[u.id], ...u };
+          await saveDeviceToFirestore(devicesMap[u.id]);
+          const displayVal = u.value !== undefined ? ` thành ${u.value}${devicesMap[u.id].unit || ''}` : '';
           const displayMode = u.mode ? ` (chế độ: ${u.mode})` : '';
-          addLog(`Lệnh máy AI: Đặt thông số ${devices[u.id].name} thành Trạng thái [${u.status?.toUpperCase() || ''}]${displayVal}${displayMode}`, 'voice');
+          await addLogToFirestore(`Lệnh máy AI: Đặt thông số ${devicesMap[u.id].name} thành Trạng thái [${u.status?.toUpperCase() || ''}]${displayVal}${displayMode}`, 'voice');
         }
-      });
+      }
     }
 
     res.json({
       textResponse: decision.textResponse,
       deviceUpdates: decision.deviceUpdates,
-      updatedDevices: Object.values(devices)
+      updatedDevices: Object.values(devicesMap)
     });
 
   } catch (error: any) {
     console.error("Gemini assistant error: ", error);
-    addLog(`AI assistant encountered error: ${error.message}`, "alert");
+    await addLogToFirestore(`AI assistant encountered error: ${error.message}`, "alert");
     res.status(500).json({ error: "Failed to query Gemini assistant", detail: error.message });
   }
 });

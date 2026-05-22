@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions to prevent Resource Poisoning
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function incoming() { 
+      return request.resource.data; 
+    }
+    
+    function existing() { 
+      return resource.data; 
+    }
+
+    // Verification structure for Device entities
+    function isValidDevice(data) {
+      return data.id is string && data.id.size() <= 100
+        && data.name is string && data.name.size() <= 200
+        && data.type is string && (data.type == 'light' || data.type == 'climate' || data.type == 'lock' || data.type == 'media' || data.type == 'vacuum' || data.type == 'switch')
+        && data.status is string && data.status.size() <= 50
+        && (data.value is int || data.value is float)
+        && data.room is string && data.room.size() <= 100;
+    }
+
+    // Verification structure for ActivityLog entities
+    function isValidActivityLog(data) {
+      return data.id is string && data.id.size() <= 100
+        && data.timestamp is string && data.timestamp.size() <= 50
+        && data.message is string && data.message.size() <= 1000
+        && (data.type == 'info' || data.type == 'auth' || data.type == 'alert' || data.type == 'voice');
+    }
+
+    // Rules for Devices
+    match /devices/{deviceId} {
+      allow read: if true;
+      allow create: if isValidId(deviceId) && isValidDevice(incoming())
+                       && incoming().id == deviceId;
+      allow update: if isValidId(deviceId) && isValidDevice(incoming())
+                       && incoming().id == existing().id;
+      allow delete: if isValidId(deviceId);
+    }
+
+    // Rules for Logs
+    match /logs/{logId} {
+      allow read: if true;
+      allow create: if isValidId(logId) && isValidActivityLog(incoming())
+                       && incoming().id == logId;
+      allow update, delete: if false; // System logs should be write-only and immutable after creation
+    }
+  }
+}
