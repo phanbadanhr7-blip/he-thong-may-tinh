@@ -1,0 +1,6 @@
+{
+  "name": "Modern Smart Home Dashboard",
+  "description": "An interactive, multi-room Smart Home Hub featuring live device telemetry, customizable routines, real-time energy analytics, and an intelligent server-side Gemini AI Voice & Chat Assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
