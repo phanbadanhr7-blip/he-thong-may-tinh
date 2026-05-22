@@ -367,6 +367,75 @@ app.post("/api/devices/reset", async (req, res) => {
   }
 });
 
+// GET /api/esp32/status
+app.get("/api/esp32/status", async (req, res) => {
+  const { id } = req.query;
+  try {
+    const devicesMap = await getDevicesFromFirestore();
+    if (id && typeof id === "string") {
+      const device = devicesMap[id];
+      if (!device) {
+        res.status(404).json({ error: "Device not found" });
+        return;
+      }
+      res.json({
+        id: device.id,
+        name: device.name,
+        status: device.status,
+        value: device.value,
+        room: device.room
+      });
+      return;
+    }
+    const values = Object.values(devicesMap).map(d => ({
+      id: d.id,
+      name: d.name,
+      status: d.status,
+      value: d.value,
+      room: d.room
+    }));
+    res.json({ devices: values });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to load state from Firestore for ESP32", detail: error.message });
+  }
+});
+
+// GET /api/esp32/update (allows easy updates from ESP32 via query strings)
+app.get("/api/esp32/update", async (req, res) => {
+  const { id, status, value } = req.query;
+  if (!id || typeof id !== "string") {
+    res.status(400).json({ error: "Thiếu id thiết bị" });
+    return;
+  }
+  try {
+    const devicesMap = await getDevicesFromFirestore();
+    const device = devicesMap[id];
+    if (!device) {
+      res.status(404).json({ error: "Device not found" });
+      return;
+    }
+
+    const update: Partial<Device> = {};
+    if (status && typeof status === "string") {
+      update.status = status;
+    }
+    if (value && typeof value === "string") {
+      update.value = parseInt(value, 10);
+    }
+
+    const currentDevice = { ...device, ...update };
+    await saveDeviceToFirestore(currentDevice);
+
+    let logStr = `[Mạch ESP32] ${currentDevice.name} được điều khiển vật lý: hiện đang [${currentDevice.status.toUpperCase()}]`;
+    if (update.value !== undefined) logStr += `, giá trị là ${update.value}${currentDevice.unit || ''}`;
+    
+    await addLogToFirestore(logStr, "info");
+    res.json({ success: true, device: currentDevice });
+  } catch (error: any) {
+    res.status(500).json({ error: "Failed to update device from ESP32", detail: error.message });
+  }
+});
+
 // POST /api/assistant
 app.post("/api/assistant", async (req, res) => {
   const { message } = req.body;

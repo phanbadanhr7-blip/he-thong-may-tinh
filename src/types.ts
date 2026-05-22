@@ -19,4 +19,4 @@ export interface ActivityLog {
   type: 'info' | 'auth' | 'alert' | 'voice';
 }
 
-export type ActiveTab = 'overview' | 'climate' | 'lighting' | 'security' | 'media' | 'energy' | 'ai-assistant';
+export type ActiveTab = 'overview' | 'climate' | 'lighting' | 'security' | 'media' | 'energy' | 'ai-assistant' | 'esp32';

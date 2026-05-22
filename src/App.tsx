@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import DeviceCard from './components/DeviceCard';
 import SmartAssistant from './components/SmartAssistant';
+import ESP32Integration from './components/ESP32Integration';
 import { Device, ActivityLog, ActiveTab } from './types';
 // @ts-ignore
 import storeHeroBanner from './assets/images/store_hero_banner_1779440575571.png';
@@ -1356,6 +1357,15 @@ export default function App() {
 
               <SmartAssistant onAssistantAction={onAssistantAction} theme={theme} />
             </div>
+          )}
+
+          {/* ESP32 Integration Tab */}
+          {activeTab === 'esp32' && (
+            <ESP32Integration 
+              devices={devices} 
+              onDeviceUpdate={updateDevice} 
+              theme={theme} 
+            />
           )}
 
         </main>

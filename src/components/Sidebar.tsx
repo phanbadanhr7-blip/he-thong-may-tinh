@@ -10,7 +10,8 @@ import {
   RefreshCw, 
   Plus, 
   Home, 
-  Activity 
+  Activity,
+  Cpu
 } from 'lucide-react';
 import { ActiveTab } from '../types';
 
@@ -30,7 +31,8 @@ export default function Sidebar({ activeTab, setActiveTab, onReset, logsCount, t
     { id: 'security' as ActiveTab, label: 'An ninh & Cửa', icon: ShieldCheck },
     { id: 'media' as ActiveTab, label: 'Trung tâm Giải trí', icon: Music },
     { id: 'energy' as ActiveTab, label: 'Lưới Điện năng', icon: Zap },
-    { id: 'ai-assistant' as ActiveTab, label: 'Giọng nói AI CoPilot', icon: Sparkles, badge: 'Mới' },
+    { id: 'ai-assistant' as ActiveTab, label: 'Giọng nói AI CoPilot', icon: Sparkles },
+    { id: 'esp32' as ActiveTab, label: 'Tích hợp ESP32', icon: Cpu, badge: 'Đồng bộ' },
   ];
 
   return (
